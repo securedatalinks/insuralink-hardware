@@ -1,0 +1,302 @@
+// TODO
+// static IP?
+// accelerometer for tilt detection. logic on iot side
+
+#include <WiFi.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_ADXL345_U.h>
+#include <Adafruit_NeoPixel.h>
+
+
+Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
+
+
+#define USE_WIFI 1
+
+#include "DHT.h"
+#define DHTPIN 4
+#define DHTTYPE DHT11
+
+#define RGB_RED   18
+#define RGB_GREEN 19
+#define RGB_BLUE  23
+
+float x_arr[3];
+float y_arr[3];
+float z_arr[3];
+
+
+
+#define RING_PIN    2
+#define LED_COUNT 24
+Adafruit_NeoPixel strip(LED_COUNT, RING_PIN, NEO_GRB + NEO_KHZ800);
+
+
+const char* ssid     = "Orchid #BUIDL";
+const char* password = "gotorchidvpn?";
+
+WiFiServer server(80);
+DHT dht(DHTPIN, DHTTYPE);
+
+void setup()
+{
+
+  // RGB RING
+  strip.begin();           // INITIALIZE NeoPixel strip object (REQUIRED)
+  strip.show();            // Turn OFF all pixels ASAP
+  strip.setBrightness(255); // Set BRIGHTNESS to about 1/5 (max = 255)
+  boot_pattern();
+
+  dht.begin();
+  Serial.begin(115200);
+  pinMode(RGB_BLUE, OUTPUT);      // set the LED pin mode
+  pinMode(RGB_RED, OUTPUT);
+  pinMode(RGB_GREEN, OUTPUT);
+
+
+  sensor_t sensor;
+  accel.getSensor(&sensor);
+  if(!accel.begin())
+  {
+    Serial.println("Ooops, no ADXL345 detected ... Check your wiring!");
+    while(1);
+  }
+  accel.setRange(ADXL345_RANGE_16_G);
+  Serial.println("");
+
+  delay(10);
+
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+if(USE_WIFI){
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    boot_pattern();
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected.");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  server.begin();
+}
+
+}
+
+int value = 0;
+
+void loop() {
+  float inclination;
+
+  
+
+  sensors_event_t event; 
+  accel.getEvent(&event);
+ 
+
+  if(event.acceleration.z < 8){
+    digitalWrite(RGB_RED, HIGH);
+    digitalWrite(RGB_GREEN, LOW);
+  }else{
+    digitalWrite(RGB_RED, LOW);
+    digitalWrite(RGB_GREEN, HIGH);
+  }
+
+  float ax = event.acceleration.x;
+  float ay = event.acceleration.y;
+  float az = event.acceleration.z;
+  inclination=180.0*acos(az/sqrt(ax*ax+ay*ay+az*az))/M_PI;
+  Serial.print("Inclination = "); Serial.print(inclination); Serial.print(". ");
+
+  // set RGB ring
+  int yaw_direction = 90 + round ( (-180.0 * atan ( ay / ax )) / M_PI );
+  if(ax > 0){
+    yaw_direction = yaw_direction + 180;
+  }
+  Serial.print("yaw = "); Serial.println(yaw_direction);
+
+  
+
+  ring2(yaw_direction,inclination);
+
+  
+  WiFiClient client = server.available();   // listen for incoming clients
+
+  if (client) {                             // if you get a client,
+    Serial.println("New Client.");           // print a message out the serial port
+    String currentLine = "";                // make a String to hold incoming data from the client
+    while (client.connected()) {            // loop while the client's connected
+      
+      if (client.available()) {             // if there's bytes to read from the client,
+        char c = client.read();             // read a byte, then
+        Serial.write(c);                    // print it out the serial monitor
+        if (c == '\n') {                    // if the byte is a newline character
+
+          // if the current line is blank, you got two newline characters in a row.
+          // that's the end of the client HTTP request, so send a response:
+          if (currentLine.length() == 0) {
+            // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
+            // and a content-type so the client knows what's coming, then a blank line:
+            
+            client.println("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET,POST");
+            client.println("Content-type:text/html");
+            
+            client.println();
+
+            float temperature = dht.readTemperature();
+            float humidity = dht.readHumidity();
+
+            sensors_event_t event; 
+            accel.getEvent(&event);
+
+            char str[200];
+            
+            sprintf(str,"{\"temperature\":\"%f\", \"humidity\":\"%f\", \"tilt\":\"%f\"}", temperature, humidity, inclination);
+            
+
+            // The HTTP response ends with another blank line:
+            client.println(str);
+            // break out of the while loop:
+            break;
+          } else {    // if you got a newline, then clear currentLine:
+            currentLine = "";
+          }
+        } else if (c != '\r') {  // if you got anything else but a carriage return character,
+          currentLine += c;      // add it to the end of the currentLine
+        }
+
+        
+        
+      }
+    }
+    // close the connection:
+    client.stop();
+    Serial.println("Client Disconnected.");
+  }
+}
+
+
+
+
+void ring2(int direction, int inclination){
+  float center = (float)direction / 15.0;
+
+int inclination_constrained = constrain(inclination,0,60);
+  int redness = map(inclination_constrained,0,60, 0, 200);
+  int greenness = map(inclination_constrained,0,60, 255, 10);
+  int blueness = map(constrain(inclination_constrained,0,40),0,40, 40, 0);
+  
+
+  strip.clear();
+  strip.setBrightness(255);
+  for(int i = 0; i < 24; i ++){
+    int brightness = proximity(i, direction);  
+    strip.setPixelColor(i, strip.Color(constrain(brightness*redness*0.01,0,255), blueness/*constrain(brightness*greenness*0.01,0,255)*/,  0));
+  }
+  strip.show();
+  delay(10);
+  
+}
+
+//return hamming distance to the true azimuth for each LED:
+// return brightness of 0 to 255
+int proximity(int led, int direction){
+  //for non-edge cases:
+  int led2 = led * 15;
+
+  int diff = direction - led2;
+  if(diff < 0){
+    diff = diff * -1;
+  }
+
+  // diff will be in range of 0 to 255
+  // want neighbouring 2 leds to light up.
+  // map 2.0f to 255-0
+  int processed_diff_L = constrain(diff, 0,75);
+  int brightness1 = map(processed_diff_L,0,75,255,0) ; //close distances get high brightness
+
+  int processed_diff_H = constrain(diff, 285,360);
+  int brightness2 = map(processed_diff_H,285,360,0,255); //far distances get high brightness
+
+
+  int brightness = 0.5* (brightness1 + brightness2);
+  //for edge cases:
+  
+
+  
+  return brightness;
+  
+}
+
+
+
+
+void ring(int direction, int inclination){
+ //direction is 0 to 360
+
+ int center = direction / 15; // convert degrees to which LED
+
+ strip.clear(); //set all LEDs OFF
+
+
+
+ int redness = 0;
+ int greenness = 0;
+
+ int inclination_constrained = constrain(inclination,0,60);
+
+  redness = map(inclination_constrained,0,60, 0, 255);
+  greenness = map(inclination_constrained,0,60, 255, 0);
+  int brightness = map(inclination_constrained, 0, 60, 0,255);
+  brightness = constrain(brightness,0,255);
+
+  int div = 7;
+
+  if(inclination_constrained < 10){
+    brightness = brightness * map(inclination_constrained,0,10,0.1,1);
+    
+  }
+  
+    strip.setPixelColor(center, strip.Color(redness,   greenness,   0));
+    if(center > 0){
+      strip.setPixelColor(center-1, strip.Color(redness/div,   greenness/div,   0));
+    }else{
+       strip.setPixelColor(23, strip.Color(redness/div,   greenness/div,   0));
+    }
+    if(center < 23){
+      strip.setPixelColor(center+1, strip.Color(redness/div,   greenness/div,   0));
+    }
+    else{
+      strip.setPixelColor(0, strip.Color(redness/div,   greenness/div,   0));
+    }
+  
+ 
+ //for(int i=0; i<strip.numPixels(); i++) {
+ //   if(i == center){
+  //    strip.setPixelColor(i, strip.Color(255,   0,   0));
+  //  }
+ //}
+ strip.show();
+ strip.setBrightness(brightness);
+ delay(5);
+ 
+}
+
+
+void boot_pattern(){
+  for(long firstPixelHue = 0; firstPixelHue < 5*65536; firstPixelHue += 256) {
+    for(int i=0; i<strip.numPixels(); i++) { // For each pixel in strip...
+      
+      int pixelHue = firstPixelHue + (i * 65536L / strip.numPixels());
+      strip.setPixelColor(i, strip.gamma32(strip.ColorHSV(pixelHue)));
+    }
+    strip.show(); // Update strip with new contents
+  }
+}
+
